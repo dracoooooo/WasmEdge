@@ -17,6 +17,7 @@
 
 #include <KnownFolders.h>
 #include <ShlObj.h>
+#include <libloaderapi.h>
 #endif
 
 namespace WasmEdge {
@@ -280,7 +281,18 @@ std::vector<std::filesystem::path> Plugin::getDefaultPluginPaths() noexcept {
 #elif WASMEDGE_OS_WINDOWS
   // FIXME: Use the `dladdr`.
   // Global plugin directory.
-  Result.push_back(std::filesystem::u8path(kGlobalPluginDir));
+  HMODULE hModule = NULL;
+  if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+                        | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                        (LPCSTR)Plugin::getDefaultPluginPaths,
+                        &hModule) != 0) {
+      char path[MAX_PATH];
+      if (GetModuleFileName(hModule, path, sizeof(path)) != 0) {
+          printf("loaded from path = %s\n", path);
+      }
+  }
+  Result.push_back(std::filesystem::u8path(path));
+  // Result.push_back(std::filesystem::u8path(kGlobalPluginDir));
   // Local home plugin directory.
   std::filesystem::path Home;
   if (const auto HomeEnv = ::getenv("USERPROFILE")) {
