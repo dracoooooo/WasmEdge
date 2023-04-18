@@ -43,10 +43,10 @@
 extern crate lazy_static;
 
 use parking_lot::{Mutex, RwLock};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-#[doc(hidden)]
 #[allow(warnings)]
+/// Foreign function interfaces generated from WasmEdge C-API.
 pub mod ffi {
     include!(concat!(env!("OUT_DIR"), "/wasmedge.rs"));
 }
@@ -119,13 +119,12 @@ pub type BoxedFn = Box<
 
 lazy_static! {
     static ref HOST_FUNCS: RwLock<HashMap<usize, Arc<Mutex<BoxedFn>>>> =
-        RwLock::new(HashMap::with_capacity(
-            env::var("MAX_HOST_FUNC_LENGTH")
-                .map(|s| s
-                    .parse::<usize>()
-                    .expect("MAX_HOST_FUNC_LENGTH should be a positive integer."))
-                .unwrap_or(500)
-        ));
+        RwLock::new(HashMap::new());
+}
+
+// Stores the mapping from the address of each host function pointer to the key of the `HOST_FUNCS`.
+lazy_static! {
+    static ref HOST_FUNC_FOOTPRINTS: Mutex<HashMap<usize, usize>> = Mutex::new(HashMap::new());
 }
 
 #[cfg(feature = "async")]

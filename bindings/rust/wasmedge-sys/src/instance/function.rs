@@ -3,6 +3,7 @@
 use crate::{
     error::{FuncError, HostFuncError, WasmEdgeError},
     ffi, BoxedFn, CallingFrame, Engine, WasmEdgeResult, WasmValue, HOST_FUNCS,
+    HOST_FUNC_FOOTPRINTS,
 };
 #[cfg(feature = "async")]
 use crate::{r#async::FiberFuture, ASYNC_STATE};
@@ -148,15 +149,34 @@ impl Function {
     /// let func = Function::create(&func_ty, Box::new(real_add), 0).expect("fail to create a Function instance");
     /// ```
     pub fn create(ty: &FuncType, real_fn: BoxedFn, cost: u64) -> WasmEdgeResult<Self> {
+        unsafe { Self::create_with_data(ty, real_fn, std::ptr::null_mut(), cost) }
+    }
+
+    /// Creates a [host function](crate::Function) with the given function type.
+    ///
+    /// N.B. that this function is used for thread-safe scenarios.
+    ///
+    /// # Arguments
+    ///
+    /// * `ty` - The types of the arguments and returns of the target function.
+    ///
+    /// * `real_fn` - The pointer to the target function.
+    ///
+    /// * `data` - The pointer to the data.
+    ///
+    /// * `cost` - The function cost in the [Statistics](crate::Statistics). Pass 0 if the calculation is not needed.
+    ///
+    /// # Error
+    ///
+    /// * If fail to create a [Function], then [WasmEdgeError::Func(FuncError::Create)](crate::error::FuncError) is returned.
+    ///
+    pub unsafe fn create_with_data(
+        ty: &FuncType,
+        real_fn: BoxedFn,
+        data: *mut c_void,
+        cost: u64,
+    ) -> WasmEdgeResult<Self> {
         let mut map_host_func = HOST_FUNCS.write();
-        if map_host_func.len() >= map_host_func.capacity() {
-            return Err(Box::new(WasmEdgeError::Func(FuncError::CreateBinding(
-                format!(
-                    "The number of the host functions reaches the upper bound: {}",
-                    map_host_func.capacity()
-                ),
-            ))));
-        }
 
         // generate key for the coming host function
         let mut rng = rand::thread_rng();
@@ -167,15 +187,18 @@ impl Function {
         map_host_func.insert(key, Arc::new(Mutex::new(real_fn)));
         drop(map_host_func);
 
-        let ctx = unsafe {
-            ffi::WasmEdge_FunctionInstanceCreateBinding(
-                ty.inner.0,
-                Some(wrap_fn),
-                key as *const usize as *mut c_void,
-                std::ptr::null_mut(),
-                cost,
-            )
-        };
+        let ctx = ffi::WasmEdge_FunctionInstanceCreateBinding(
+            ty.inner.0,
+            Some(wrap_fn),
+            key as *const usize as *mut c_void,
+            data,
+            cost,
+        );
+
+        // create a footprint for the host function
+        let footprint = ctx as usize;
+        let mut footprint_to_id = HOST_FUNC_FOOTPRINTS.lock();
+        footprint_to_id.insert(footprint, key);
 
         match ctx.is_null() {
             true => Err(Box::new(WasmEdgeError::Func(FuncError::Create))),
@@ -317,6 +340,45 @@ impl Function {
         }
     }
 
+    /// Creates a [host function](crate::Function) with the given function type and the default function wrapper.
+    ///
+    /// # Arguments
+    ///
+    /// * `ty` - The types of the arguments and returns of the target function.
+    ///
+    /// * `real_fn` - The pointer to the target function.
+    ///
+    /// * `data` - The pointer to the data.
+    ///
+    /// * `cost` - The function cost in the [Statistics](crate::Statistics). Pass 0 if the calculation is not needed.
+    ///
+    /// # Error
+    ///
+    /// * If fail to create a [Function], then [WasmEdgeError::Func(FuncError::Create)](crate::error::FuncError) is returned.
+    ///
+    pub unsafe fn create_with_default_wrapper(
+        ty: &FuncType,
+        real_fn: *mut c_void,
+        data: *mut c_void,
+        cost: u64,
+    ) -> WasmEdgeResult<Self> {
+        let ctx = ffi::WasmEdge_FunctionInstanceCreateBinding(
+            ty.inner.0,
+            Some(wrap_fn),
+            real_fn,
+            data,
+            cost,
+        );
+
+        match ctx.is_null() {
+            true => Err(Box::new(WasmEdgeError::Func(FuncError::Create))),
+            false => Ok(Self {
+                inner: Arc::new(InnerFunc(ctx)),
+                registered: false,
+            }),
+        }
+    }
+
     /// Returns the underlying wasm type of this [Function].
     ///
     /// # Errors
@@ -438,10 +500,23 @@ impl Function {
             inner: InnerFuncRef(self.inner.0 as *const _),
         }
     }
+
+    /// Provides a raw pointer to the inner function context.
+    #[cfg(feature = "ffi")]
+    pub fn as_ptr(&self) -> *const ffi::WasmEdge_FunctionInstanceContext {
+        self.inner.0 as *const _
+    }
 }
 impl Drop for Function {
     fn drop(&mut self) {
         if !self.registered && Arc::strong_count(&self.inner) == 1 && !self.inner.0.is_null() {
+            // remove the real_func from HOST_FUNCS
+            let footprint = self.inner.0 as usize;
+            if let Some(key) = HOST_FUNC_FOOTPRINTS.lock().remove(&footprint) {
+                let mut map_host_func = HOST_FUNCS.write();
+                map_host_func.remove(&key);
+            }
+            // delete the function instance
             unsafe { ffi::WasmEdge_FunctionInstanceDelete(self.inner.0) };
         }
     }
@@ -551,6 +626,12 @@ impl FuncType {
         }
 
         types.into_iter().map(Into::into)
+    }
+
+    /// Provides a raw pointer to the inner function type context.
+    #[cfg(feature = "ffi")]
+    pub fn as_ptr(&self) -> *const ffi::WasmEdge_FunctionTypeContext {
+        self.inner.0 as *const _
     }
 }
 impl Drop for FuncType {
@@ -662,7 +743,7 @@ unsafe impl Sync for InnerFuncRef {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{types::WasmValue, Executor};
+    use crate::{types::WasmValue, Executor, HOST_FUNCS};
     use std::{
         sync::{Arc, Mutex},
         thread,
@@ -1041,5 +1122,69 @@ mod tests {
         assert!(result.is_ok());
         let returns = result.unwrap();
         assert_eq!(returns[0].to_i32(), 3);
+    }
+
+    #[test]
+    fn test_crazy_function_creation() {
+        #[sys_host_function]
+        fn real_add(
+            _frame: CallingFrame,
+            input: Vec<WasmValue>,
+        ) -> Result<Vec<WasmValue>, HostFuncError> {
+            println!("Rust: Entering Rust function real_add");
+
+            if input.len() != 2 {
+                return Err(HostFuncError::User(1));
+            }
+
+            let a = if input[0].ty() == ValType::I32 {
+                input[0].to_i32()
+            } else {
+                return Err(HostFuncError::User(2));
+            };
+
+            let b = if input[1].ty() == ValType::I32 {
+                input[1].to_i32()
+            } else {
+                return Err(HostFuncError::User(3));
+            };
+
+            let c = a + b;
+            println!("Rust: calcuating in real_add c: {c:?}");
+
+            println!("Rust: Leaving Rust function real_add");
+            Ok(vec![WasmValue::from_i32(c)])
+        }
+
+        let start_num = HOST_FUNCS.read().len();
+        println!("start_num: {}", start_num);
+
+        let mut funcs = vec![];
+        for _ in 1..=1_000_000 {
+            // create a FuncType
+            let result = FuncType::create(vec![ValType::I32; 2], vec![ValType::I32]);
+            assert!(result.is_ok());
+            let func_ty = result.unwrap();
+            // create a host function
+            let result = Function::create(&func_ty, Box::new(real_add), 0);
+            assert!(result.is_ok());
+            let host_func = result.unwrap();
+            funcs.push(host_func);
+        }
+
+        println!(
+            "len of HOST_FUNC_FOOTPRINTS: {}",
+            HOST_FUNC_FOOTPRINTS.lock().len()
+        );
+        println!("len of HOST_FUNCS: {}", HOST_FUNCS.read().len());
+
+        assert_eq!(
+            HOST_FUNCS.read().len() - start_num,
+            funcs.len(),
+            "expected: {}, actual: {}, start_num: {}",
+            funcs.len(),
+            HOST_FUNCS.read().len() - start_num,
+            start_num
+        );
     }
 }

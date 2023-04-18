@@ -1,4 +1,4 @@
-# WasmEdge C 0.12.0 API Documentation
+# WasmEdge C 0.12.0 API Documentation (Unreleased)
 
 [WasmEdge C API](https://github.com/WasmEdge/WasmEdge/blob/master/include/api/wasmedge/wasmedge.h) denotes an interface to access the WasmEdge runtime. The following are the guides to working with the C APIs of WasmEdge.
 
@@ -1673,7 +1673,7 @@ int main() {
     printf("Function `fib` not found.\n");
     return 1;
   }
-  /* Invoke the WASM fnction. */
+  /* Invoke the WASM function. */
   Res = WasmEdge_ExecutorInvoke(ExecCxt, FuncCxt, Params, 1, Returns, 1);
   if (WasmEdge_ResultOK(Res)) {
     printf("Get the result: %d\n", WasmEdge_ValueGetI32(Returns[0]));
