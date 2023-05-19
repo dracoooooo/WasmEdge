@@ -312,7 +312,8 @@ std::vector<std::filesystem::path> Plugin::getDefaultPluginPaths() noexcept {
   return Result;
 }
 
-bool Plugin::load(const std::filesystem::path &Path) noexcept {
+[[gnu::visibility("default")]] bool
+Plugin::load(const std::filesystem::path &Path) noexcept {
   std::error_code Error;
   auto Status = std::filesystem::status(Path, Error);
   if (likely(!Error)) {
@@ -374,7 +375,8 @@ void Plugin::addPluginOptions(PO::ArgumentParser &Parser) noexcept {
   }
 }
 
-const Plugin *Plugin::find(std::string_view Name) noexcept {
+[[gnu::visibility("default")]] const Plugin *
+Plugin::find(std::string_view Name) noexcept {
   if (NiftyCounter != 0) {
     if (auto Iter = PluginNameLookup.find(Name);
         Iter != PluginNameLookup.end()) {
@@ -409,7 +411,8 @@ Plugin::Plugin(const PluginDescriptor *D) noexcept : Desc(D) {
   }
 }
 
-const PluginModule *Plugin::findModule(std::string_view Name) const noexcept {
+[[gnu::visibility("default")]] const PluginModule *
+Plugin::findModule(std::string_view Name) const noexcept {
   if (auto Iter = ModuleNameLookup.find(Name); Iter != ModuleNameLookup.end()) {
     return std::addressof(ModuleRegistory[Iter->second]);
   }
